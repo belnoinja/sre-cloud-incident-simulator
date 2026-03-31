@@ -10,7 +10,8 @@ RUN pip install --upgrade pip && \
 # Copy logic
 COPY . .
 
-# Expose port (HF spaces default is 7860, but standard uvicorn is 8000. OpenEnv handles via FastAPI)
-EXPOSE 8000
+# Hugging Face provides PORT environment variable (default 7860)
+ENV PORT=7860
+EXPOSE $PORT
 
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "uvicorn server.app:app --host 0.0.0.0 --port ${PORT}"]
