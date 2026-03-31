@@ -1,0 +1,19 @@
+name: "Cloud Incident Simulator"
+description: "A Cloud infrastructure simulator for SRE agents. Supports multiple tasks: easy, medium, hard."
+version: "0.1.0"
+entrypoint: "server.app:app"
+
+action:
+  type: "CloudEnvAction"
+  module: "models"
+observation:
+  type: "CloudEnvObservation"
+  module: "models"
+state:
+  type: "CloudEnvState"
+  module: "models"
+
+tags:
+  - "openenv"
+  - "sre"
+  - "devops"
