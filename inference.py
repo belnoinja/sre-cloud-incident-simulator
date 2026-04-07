@@ -1,22 +1,19 @@
 import sys
 import traceback
 
-def emergency_exit(e):
-    print(f"[DEBUG] Fatal global exception: {e}", flush=True)
-    sys.exit(0)
-
 try:
     import asyncio
-    import os
     import json
     import logging
+    import os
     from typing import List, Optional
 
     from openai import AsyncOpenAI
     from client import CloudEnvClient
     from models import CloudEnvAction
 except BaseException as e:
-    emergency_exit(e)
+    print(f"[DEBUG] Fatal module import exception: {e}", flush=True)
+    sys.exit(0)
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
@@ -58,7 +55,7 @@ def log_step(step: int, action: str, reward: float, done: bool, error: Optional[
     done_val = str(done).lower()
     print(
         f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
-        flush=True,
+        flush=True
     )
 
 def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
@@ -66,7 +63,7 @@ def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> No
     print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
 
 async def run_episode(client: AsyncOpenAI, env: CloudEnvClient, task_name: str):
-    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
+    print(f"[START] task={task_name} env={BENCHMARK} model={MODEL_NAME}", flush=True)
     rewards: List[float] = []
     steps_taken = 0
     score = 0.0
@@ -79,8 +76,7 @@ async def run_episode(client: AsyncOpenAI, env: CloudEnvClient, task_name: str):
                 result = await result
             obs = result.observation
         except Exception as e:
-            # Network issue or parsing issue in reset
-            print(f"[DEBUG] unhandled exception in reset: {e}", flush=True)
+            print(f"[DEBUG] unhandled exception in reset: {str(e).encode('ascii', 'replace').decode('ascii')}", flush=True)
             return
 
         messages = [
@@ -101,62 +97,79 @@ async def run_episode(client: AsyncOpenAI, env: CloudEnvClient, task_name: str):
                 msg = response.choices[0].message
             except Exception as e:
                 rewards.append(0.0)
-                log_step(step=step, action="error_llm", reward=0.0, done=True, error=str(e))
+                safe_err = str(e).encode("ascii", "replace").decode("ascii")
+                print(f"[STEP] step={step} action=error_llm reward=0.00 done=true error={safe_err}", flush=True)
                 break
 
-            action_str = "no_action"
-            command = "unknown"
-            cmd_args = {}
-            
             if msg.tool_calls:
-                tool_call = msg.tool_calls[0]
-                try:
-                    args = json.loads(tool_call.function.arguments)
-                    command = args.get("command", "")
-                    cmd_args = args.get("args", {})
-                    action_str = f"{command}({cmd_args})"
-                except Exception as e:
-                    action_str = f"parse_error({e})"
-                
                 messages.append(msg)
                 
-                try:
-                    step_res = env.step(CloudEnvAction(command=command, args=cmd_args))
-                    if asyncio.iscoroutine(step_res):
-                        step_res = await step_res
-                    obs = step_res.observation
-                    reward = step_res.reward or 0.0
-                    done = step_res.done
-                    error = obs.error if obs.error else None
+                # We must process every tool call that the model requested
+                for tool_call in msg.tool_calls:
+                    command = "unknown"
+                    cmd_args = {}
                     
-                    rewards.append(reward)
-                    log_step(step=step, action=action_str, reward=reward, done=done, error=error)
-                    
-                    feedb = f"Error: {obs.error}" if obs.error else f"Output: {obs.output}"
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": feedb
-                    })
-                    
-                    if done:
-                        score = max(0.0, min(1.0, float(reward)))
-                        if score > 0:
-                            success = True
+                    try:
+                        args = json.loads(tool_call.function.arguments)
+                        if isinstance(args, dict):
+                            command = args.get("command", "")
+                            extracted_args = args.get("args")
+                            if isinstance(extracted_args, dict):
+                                cmd_args = extracted_args
+                        action_str = f"{command}({cmd_args})"
+                    except Exception as e:
+                        action_str = "parse_error"
+
+                    try:
+                        step_res = env.step(CloudEnvAction(command=command, args=cmd_args))
+                        if asyncio.iscoroutine(step_res):
+                            step_res = await step_res
+                        obs = step_res.observation
+                        reward = step_res.reward or 0.0
+                        done = step_res.done
+                        error = obs.error if obs.error else None
+                        
+                        rewards.append(reward)
+                        err_str = error if error else "null"
+                        print(f"[STEP] step={step} action={action_str} reward={reward:.2f} done={str(done).lower()} error={err_str}", flush=True)
+                        
+                        feedb = f"Error: {obs.error}" if obs.error else f"Output: {obs.output}"
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": feedb
+                        })
+                        
+                        if done:
+                            score = max(0.0, min(1.0, float(reward)))
+                            if score > 0:
+                                success = True
+                            break
+                    except Exception as e:
+                        rewards.append(0.0)
+                        safe_err = str(e).encode("ascii", "replace").decode("ascii")
+                        print(f"[STEP] step={step} action={action_str} reward=0.00 done=true error={safe_err}", flush=True)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": f"System Error: {safe_err}"
+                        })
+                        done = True
                         break
-                except Exception as e:
-                    rewards.append(0.0)
-                    log_step(step=step, action=action_str, reward=0.0, done=True, error=str(e))
+                
+                if done:
                     break
             else:
                 rewards.append(0.0)
-                log_step(step=step, action="stop", reward=0.0, done=True, error="Agent returned no tool call")
+                print(f"[STEP] step={step} action=stop reward=0.00 done=true error=Agent returned no tool call", flush=True)
                 break
                 
     except Exception as e:
-        print(f"[DEBUG] unhandled exception in episode loop: {e}", flush=True)
+        safe_err = str(e).encode("ascii", "replace").decode("ascii")
+        print(f"[DEBUG] unhandled exception in episode loop: {safe_err}", flush=True)
     finally:
-        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+        print(f"[END] success={str(success).lower()} steps={steps_taken} score={score:.3f} rewards={rewards_str}", flush=True)
 
 async def main():
     env = None
@@ -193,5 +206,7 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except BaseException as e:
-        emergency_exit(e)
+        print(f"[DEBUG] Final exit exception: {e}", flush=True)
+        sys.exit(0)
+
 
