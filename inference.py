@@ -69,7 +69,7 @@ async def run_episode(client: OpenAI, env: CloudEnvClient, task_name: str):
     
     try:
         # Wrap risky parsing / state logic
-        result = await env.reset(task=task_name)
+        result = env.reset(task=task_name)
         obs = result.observation
         
         messages = [
@@ -112,7 +112,7 @@ async def run_episode(client: OpenAI, env: CloudEnvClient, task_name: str):
                 messages.append(msg)
                 
                 try:
-                    step_res = await env.step(CloudEnvAction(command=command, args=cmd_args))
+                    step_res = env.step(CloudEnvAction(command=command, args=cmd_args))
                     obs = step_res.observation
                     reward = step_res.reward or 0.0
                     done = step_res.done
@@ -183,4 +183,9 @@ async def main():
             print(f"[DEBUG] env.close() error: {ce}", flush=True)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except BaseException as e:
+        print(f"[DEBUG] unhandled top-level exception: {e}", flush=True)
+        import sys
+        sys.exit(0)
