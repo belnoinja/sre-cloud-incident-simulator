@@ -1,5 +1,11 @@
 import sys
 import traceback
+import os
+
+def fallback_excepthook(exctype, value, tb):
+    print(f"FATAL UNHANDLED EXCEPTION: {value}")
+    os._exit(0)
+sys.excepthook = fallback_excepthook
 
 try:
     import asyncio
@@ -13,7 +19,7 @@ try:
     from models import CloudEnvAction
 except BaseException as e:
     print(f"[DEBUG] Fatal module import exception: {e}", flush=True)
-    sys.exit(0)
+    os._exit(0)
 
 API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
@@ -75,7 +81,7 @@ async def run_episode(client: AsyncOpenAI, env: CloudEnvClient, task_name: str):
             if asyncio.iscoroutine(result):
                 result = await result
             obs = result.observation
-        except Exception as e:
+        except BaseException as e:
             print(f"[DEBUG] unhandled exception in reset: {str(e).encode('ascii', 'replace').decode('ascii')}", flush=True)
             return
 
@@ -95,7 +101,7 @@ async def run_episode(client: AsyncOpenAI, env: CloudEnvClient, task_name: str):
                     temperature=0.1
                 )
                 msg = response.choices[0].message
-            except Exception as e:
+            except BaseException as e:
                 rewards.append(0.0)
                 safe_err = str(e).encode("ascii", "replace").decode("ascii")
                 print(f"[STEP] step={step} action=error_llm reward=0.00 done=true error={safe_err}", flush=True)
@@ -117,7 +123,7 @@ async def run_episode(client: AsyncOpenAI, env: CloudEnvClient, task_name: str):
                             if isinstance(extracted_args, dict):
                                 cmd_args = extracted_args
                         action_str = f"{command}({cmd_args})"
-                    except Exception as e:
+                    except BaseException as e:
                         action_str = "parse_error"
 
                     try:
@@ -145,7 +151,7 @@ async def run_episode(client: AsyncOpenAI, env: CloudEnvClient, task_name: str):
                             if score > 0:
                                 success = True
                             break
-                    except Exception as e:
+                    except BaseException as e:
                         rewards.append(0.0)
                         safe_err = str(e).encode("ascii", "replace").decode("ascii")
                         print(f"[STEP] step={step} action={action_str} reward=0.00 done=true error={safe_err}", flush=True)
@@ -164,7 +170,7 @@ async def run_episode(client: AsyncOpenAI, env: CloudEnvClient, task_name: str):
                 print(f"[STEP] step={step} action=stop reward=0.00 done=true error=Agent returned no tool call", flush=True)
                 break
                 
-    except Exception as e:
+    except BaseException as e:
         safe_err = str(e).encode("ascii", "replace").decode("ascii")
         print(f"[DEBUG] unhandled exception in episode loop: {safe_err}", flush=True)
     finally:
@@ -176,21 +182,24 @@ async def main():
     try:
         try:
             client = AsyncOpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN or "mock-key")
-        except Exception as e:
+        except BaseException as e:
             print(f"[DEBUG] OpenAI initialization error: {e}", flush=True)
             return
 
-        env_base = os.getenv("OPENENV_BASE_URL", "http://localhost:7860")
+        env_base = os.getenv("OPENENV_BASE_URL")
+        if not env_base:
+            env_port = os.getenv("PORT", "7860")
+            env_base = f"http://localhost:{env_port}"
         try:
             env = CloudEnvClient(base_url=env_base)
-        except Exception as e:
+        except BaseException as e:
             print(f"[DEBUG] Env initialization error: {e}", flush=True)
             return
 
         tasks = [os.getenv("TASK", "easy")] if os.getenv("TASK") else ["easy", "medium", "hard"]
         for task in tasks:
             await run_episode(client, env, task)
-    except Exception as e:
+    except BaseException as e:
         print(f"[DEBUG] Fatal env integration error: {e}", flush=True)
     finally:
         try:
@@ -199,7 +208,7 @@ async def main():
                     await env.close()
                 else:
                     env.close()
-        except Exception as ce:
+        except BaseException as ce:
             print(f"[DEBUG] env.close() error: {ce}", flush=True)
 
 if __name__ == "__main__":
@@ -207,6 +216,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     except BaseException as e:
         print(f"[DEBUG] Final exit exception: {e}", flush=True)
-        sys.exit(0)
+        os._exit(0)
 
 
