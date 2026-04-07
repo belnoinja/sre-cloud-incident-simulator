@@ -1,14 +1,22 @@
+import asyncio
 import os
 import json
 import logging
+import traceback
+from typing import List, Optional
+
 from openai import OpenAI
 from client import CloudEnvClient
 from models import CloudEnvAction
 
-# Configuration
-API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
-MODEL_NAME = os.environ.get("MODEL_NAME", "gpt-4o")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+# Use environment variables as specified by the instructions
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
+# HF_TOKEN is specified, but fallback to OPENAI_API_KEY or mock-key for local robust testing
+API_KEY = os.getenv("HF_TOKEN") or os.getenv("OPENAI_API_KEY", "mock-key")
+
+BENCHMARK = "cloud_env"
+MAX_STEPS = 15
 
 # Tools definition for OpenAI
 tools = [
@@ -35,93 +43,142 @@ tools = [
     }
 ]
 
-def run_task(agent_client, env, task_name: str) -> float:
-    print(f"\n{'='*50}\nStarting Task: {task_name.upper()}\n{'='*50}")
-    
-    # 1. Reset Environment
-    result = env.reset(task=task_name)
-    obs = result.observation
-    
-    print(f"Task Objective: {obs.message}")
-    
-    messages = [
-        {"role": "system", "content": "You are an SRE on a simulated cloud system. You must resolve the task described in the initialization message by taking deliberate execute_cloud_command actions. You have strict bounds, do not guess volume IDs or instance types without verifying them."},
-        {"role": "user", "content": f"The environment has initialized. Your task:\n{obs.message}"}
-    ]
-    
-    max_turns = 15
-    for turn in range(max_turns):
-        print(f"\n--- Turn {turn+1} ---")
-        
-        # 2. Call OpenAI Model
-        response = agent_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=messages,
-            tools=tools,
-            tool_choice="auto"
-        )
-        
-        msg = response.choices[0].message
-        
-        # Determine if model returned a tool call
-        if msg.tool_calls:
-            tool_call = msg.tool_calls[0]
-            args = json.loads(tool_call.function.arguments)
-            command = args.get("command")
-            cmd_args = args.get("args", {})
-            print(f"Agent Action: {command}({cmd_args})")
-            
-            messages.append(msg) # Append AI message
-            
-            # 3. Step Environment
-            action = CloudEnvAction(command=command, args=cmd_args)
-            step_res = env.step(action)
-            obs = step_res.observation
-            
-            # Print output
-            outpreview = obs.output[:200] + ('...' if len(obs.output) > 200 else '')
-            if obs.error:
-                print(f"Environment Error: {obs.error}")
-                feedb = f"Error: {obs.error}"
-            else:
-                print(f"Environment Output:\n{outpreview}")
-                feedb = f"Output: {obs.output}"
-            
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "content": feedb
-            })
-            
-            if obs.done:
-                print(f"\n=> Task Finished! Reward: {obs.reward} | Terminal Message: {obs.message}")
-                return obs.reward
-        else:
-            print("Agent stopped answering with tool calls.")
-            break
-            
-    print("\n=> Failed (Max turns reached).")
-    return 0.0
+def log_start(task: str, env: str, model: str) -> None:
+    print(f"[START] task={task} env={env} model={model}", flush=True)
 
-if __name__ == "__main__":
-    if not OPENAI_API_KEY:
-        print("Set OPENAI_API_KEY to run baseline.")
-        exit(1)
-        
-    client = OpenAI(api_key=OPENAI_API_KEY)
+def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
+    error_val = error if error else "null"
+    done_val = str(done).lower()
+    print(
+        f"[STEP] step={step} action={action} reward={reward:.2f} done={done_val} error={error_val}",
+        flush=True,
+    )
+
+def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
+    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
+
+async def run_episode(client: OpenAI, env: CloudEnvClient, task_name: str):
+    log_start(task=task_name, env=BENCHMARK, model=MODEL_NAME)
     
-    tasks = ["easy", "medium", "hard"]
-    
-    # We must start the fastapi server locally to test against HTTP using EnvClient 
-    # Or just run it inside a mock thread.
-    # The simplest baseline uses the synchronous EnvClient wrapper over the URL:
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
     
     try:
-        # Note: server must be running on API_BASE_URL (uv run server or uvicorn server.app:app)
-        with CloudEnvClient(base_url=API_BASE_URL).sync() as env:
-            for task in tasks:
-                reward = run_task(client, env, task)
-                print(f"Task '{task}' achieved reward: {reward}")
+        # Wrap risky parsing / state logic
+        result = await env.reset(task=task_name)
+        obs = result.observation
+        
+        messages = [
+            {"role": "system", "content": "You are an SRE on a simulated cloud system. You must resolve the task described in the initialization message by taking deliberate execute_cloud_command actions. You have strict bounds, do not guess volume IDs or instance types without verifying them."},
+            {"role": "user", "content": f"The environment has initialized. Your task:\n{obs.message}"}
+        ]
+        
+        for step in range(1, MAX_STEPS + 1):
+            steps_taken = step
+            try:
+                response = client.chat.completions.create(
+                    model=MODEL_NAME,
+                    messages=messages,
+                    tools=tools,
+                    tool_choice="auto",
+                    temperature=0.1
+                )
+                
+                msg = response.choices[0].message
+            except Exception as e:
+                # Catch network / LLM errors per requirement (Wrap risky operations)
+                rewards.append(0.0)
+                log_step(step=step, action="error_llm", reward=0.0, done=True, error=str(e))
+                break
+
+            action_str = "no_action"
+            command = "unknown"
+            cmd_args = {}
+            
+            if msg.tool_calls:
+                tool_call = msg.tool_calls[0]
+                try:
+                    args = json.loads(tool_call.function.arguments)
+                    command = args.get("command", "")
+                    cmd_args = args.get("args", {})
+                    action_str = f"{command}({cmd_args})"
+                except Exception as e:
+                    action_str = f"parse_error({e})"
+                
+                messages.append(msg)
+                
+                try:
+                    step_res = await env.step(CloudEnvAction(command=command, args=cmd_args))
+                    obs = step_res.observation
+                    reward = step_res.reward or 0.0
+                    done = step_res.done
+                    error = obs.error if obs.error else None
+                    
+                    rewards.append(reward)
+                    log_step(step=step, action=action_str, reward=reward, done=done, error=error)
+                    
+                    feedb = f"Error: {obs.error}" if obs.error else f"Output: {obs.output}"
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": feedb
+                    })
+                    
+                    if done:
+                        # Success logic: score clamped to [0, 1]
+                        score = max(0.0, min(1.0, reward))
+                        if score > 0:
+                            success = True
+                        break
+                except Exception as e:
+                    # network error with env server
+                    rewards.append(0.0)
+                    log_step(step=step, action=action_str, reward=0.0, done=True, error=str(e))
+                    break
+            else:
+                rewards.append(0.0)
+                log_step(step=step, action="stop", reward=0.0, done=True, error="Agent returned no tool call")
+                break
+                
     except Exception as e:
-        print(f"Could not connect to {API_BASE_URL}. Ensure the server is running.")
-        print(f"Error: {e}")
+        # If env.reset or other unhandled logic throws
+        print(f"[DEBUG] unhandled exception in episode: {e}")
+    finally:
+        log_end(success=success, steps=steps_taken, score=score, rewards=rewards)
+
+async def main():
+    if not API_KEY:
+        print("HF_TOKEN / OPENAI_API_KEY environment variable is missing", flush=True)
+        # Should we exit 1? The instructions say "Complete without error". 
+        # For evaluation, token will be provided.
+    
+    client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
+    
+    # We use CloudEnvClient(). Assuming openenv validate configures the server
+    # environment variables such that the default env client points to it.
+    # Otherwise fallback to localhost.
+    env_base = os.getenv("OPENENV_BASE_URL", "http://localhost:8000")
+    env = CloudEnvClient(base_url=env_base)
+    
+    try:
+        tasks = [os.getenv("TASK", "easy")] if os.getenv("TASK") else ["easy", "medium", "hard"]
+        for task in tasks:
+            await run_episode(client, env, task)
+    except Exception as e:
+        print(f"[DEBUG] Fatal env integration error: {e}", flush=True)
+        traceback.print_exc()
+    finally:
+        try:
+            if hasattr(env, "close"):
+                if asyncio.iscoroutinefunction(env.close):
+                    await env.close()
+                else:
+                    env.close()
+        except Exception as ce:
+            print(f"[DEBUG] env.close() error: {ce}", flush=True)
+
+if __name__ == "__main__":
+    asyncio.run(main())
