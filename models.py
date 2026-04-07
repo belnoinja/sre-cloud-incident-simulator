@@ -1,8 +1,9 @@
 from typing import List, Dict, Optional, Any
-from pydantic import Field
+from pydantic import Field, ConfigDict
 from openenv.core.env_server import Action, Observation, State
 
 class CloudEnvAction(Action):
+    model_config = ConfigDict(protected_namespaces=())
     """
     An action executed by the simulated SRE agent.
     command: The name of the CLI/API command to execute.
@@ -12,6 +13,7 @@ class CloudEnvAction(Action):
     args: Dict[str, Any] = Field(default_factory=dict)
 
 class CloudEnvObservation(Observation):
+    model_config = ConfigDict(protected_namespaces=())
     """
     The observation returned by the cloud simulator after an action.
     """
@@ -22,6 +24,7 @@ class CloudEnvObservation(Observation):
     message: str          # Feedback message (e.g., 'Task completed successfully!')
 
 class CloudEnvState(State):
+    model_config = ConfigDict(protected_namespaces=())
     """
     Internal state of the simulated cloud infrastructure.
     """

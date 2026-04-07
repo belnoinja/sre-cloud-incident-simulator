@@ -10,3 +10,11 @@ env.bak/
 venv.bak/
 .uv/
 uv.lock
+
+# Local Testing and Temporary Files
+test_system.py
+mock_openai_router.py
+out.txt
+check_imports.py
+outputs/
+*.log

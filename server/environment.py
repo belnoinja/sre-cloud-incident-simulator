@@ -10,7 +10,8 @@ class CloudIncidentEnvironment(Environment):
 
     MAX_STEPS = 30
 
-    def __init__(self):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self._state = CloudEnvState()
         self._won = False
         self._lost = False
@@ -74,7 +75,7 @@ class CloudIncidentEnvironment(Environment):
 
         return CloudEnvObservation(
             done=False,
-            reward=None,
+            reward=0.0,
             output="Environment initialized.",
             error="",
             current_task=self._state.current_task,

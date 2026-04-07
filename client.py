@@ -19,16 +19,19 @@ class CloudEnvClient(EnvClient[CloudEnvAction, CloudEnvObservation, CloudEnvStat
         if not obs_data and "error" in payload:
              error_msg = payload["error"]
 
+        if not isinstance(obs_data, dict):
+            obs_data = {}
+            
         return StepResult(
             observation=CloudEnvObservation(
                 done=payload.get("done", False),
-                reward=payload.get("reward", 0.0),
-                output=obs_data.get("output", ""),
+                reward=float(payload.get("reward") or 0.0),
+                output=str(obs_data.get("output", "")),
                 error=error_msg,
-                current_task=obs_data.get("current_task", "unknown"),
-                message=obs_data.get("message", "")
+                current_task=str(obs_data.get("current_task") or "unknown"),
+                message=str(obs_data.get("message", ""))
             ),
-            reward=payload.get("reward", 0.0),
+            reward=float(payload.get("reward") or 0.0),
             done=payload.get("done", False),
         )
 
