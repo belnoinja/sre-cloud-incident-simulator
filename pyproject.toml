@@ -11,8 +11,13 @@ dependencies = [
     "openenv-core>=0.2.0",
     "pydantic>=2.0.0",
     "fastapi",
-    "uvicorn"
+    "uvicorn",
+    "openai>=1.0.0"
 ]
 
 [project.scripts]
 server = "server.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["server"]
+py-modules = ["client", "inference", "models"]

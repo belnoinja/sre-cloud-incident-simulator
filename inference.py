@@ -70,6 +70,8 @@ async def run_episode(client: OpenAI, env: CloudEnvClient, task_name: str):
     try:
         # Wrap risky parsing / state logic
         result = env.reset(task=task_name)
+        if asyncio.iscoroutine(result):
+            result = await result
         obs = result.observation
         
         messages = [
@@ -113,6 +115,8 @@ async def run_episode(client: OpenAI, env: CloudEnvClient, task_name: str):
                 
                 try:
                     step_res = env.step(CloudEnvAction(command=command, args=cmd_args))
+                    if asyncio.iscoroutine(step_res):
+                        step_res = await step_res
                     obs = step_res.observation
                     reward = step_res.reward or 0.0
                     done = step_res.done
@@ -163,7 +167,7 @@ async def main():
         # We use CloudEnvClient(). Assuming openenv validate configures the server
         # environment variables such that the default env client points to it.
         # Otherwise fallback to localhost.
-        env_base = os.getenv("OPENENV_BASE_URL", "http://localhost:8000")
+        env_base = os.getenv("OPENENV_BASE_URL", "http://localhost:7860")
         env = CloudEnvClient(base_url=env_base)
         
         tasks = [os.getenv("TASK", "easy")] if os.getenv("TASK") else ["easy", "medium", "hard"]
