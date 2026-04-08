@@ -11,28 +11,31 @@ class CloudEnvClient(EnvClient[CloudEnvAction, CloudEnvObservation, CloudEnvStat
         }
 
     def _parse_result(self, payload: dict) -> StepResult:
+        # The server might return the observation nested or flat.
         obs_data = payload.get("observation", {})
-        
-        # In case the result directly holds the error message (as a failed step response)
-        error_msg = obs_data.get("error", "")
-        # fallback if format changes
-        if not obs_data and "error" in payload:
-             error_msg = payload["error"]
-
         if not isinstance(obs_data, dict):
             obs_data = {}
+
+        # Capture fields from either local obs_data or top-level payload
+        def get_field(key, default=""):
+            return str(obs_data.get(key) or payload.get(key) or default)
+
+        error_msg = get_field("error")
+        # Ensure we favor the top-level reward/done if present
+        reward = float(payload.get("reward") or obs_data.get("reward") or 0.0)
+        done = bool(payload.get("done") or obs_data.get("done") or False)
             
         return StepResult(
             observation=CloudEnvObservation(
-                done=payload.get("done", False),
-                reward=float(payload.get("reward") or 0.0),
-                output=str(obs_data.get("output", "")),
+                done=done,
+                reward=reward,
+                output=get_field("output"),
                 error=error_msg,
-                current_task=str(obs_data.get("current_task") or "unknown"),
-                message=str(obs_data.get("message", ""))
+                current_task=get_field("current_task", "unknown"),
+                message=get_field("message")
             ),
-            reward=float(payload.get("reward") or 0.0),
-            done=payload.get("done", False),
+            reward=reward,
+            done=done,
         )
 
     def _parse_state(self, payload: dict) -> CloudEnvState:
