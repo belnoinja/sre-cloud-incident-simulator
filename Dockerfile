@@ -1,21 +1,28 @@
 FROM public.ecr.aws/docker/library/python:3.11-slim
 
+# Prevent Python from buffering logs (Critical for seeing tracebacks)
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
 WORKDIR /app
 
-# Required for some python package builds
-RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
+# Install python dependencies
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Ensure the local modules are copied
+# Copy project files (inference.py, client.py, models.py)
 COPY . .
 
-# HF/Evaluator standard port
+# Set standard port
 ENV PORT=7860
 EXPOSE 7860
 
-# Force unbuffered output so logs show up immediately in the participant log
-ENV PYTHONUNBUFFERED=1
-
-CMD ["python", "inference.py"]
+# Run in unbuffered mode
+CMD ["python", "-u", "inference.py"]

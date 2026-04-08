@@ -3,76 +3,67 @@ import json
 import os
 import sys
 import traceback
-import textwrap
-from typing import List, Optional
+from typing import List
 from dotenv import load_dotenv
-
 from openai import OpenAI
-from client import CloudEnvClient
-from models import CloudEnvAction
 
-# Load environment variables
+# Safe imports for custom modules
+try:
+    from client import CloudEnvClient
+    from models import CloudEnvAction
+except ImportError as e:
+    print(f"[BOOT ERROR] Local files missing: {e}", flush=True)
+    sys.exit(0)
+
 load_dotenv()
 
-# Configuration
+# Config
 API_KEY = os.getenv("HF_TOKEN") or os.getenv("API_KEY")
 API_BASE_URL = os.getenv("API_BASE_URL") or "https://router.huggingface.co/v1"
 MODEL_NAME = os.getenv("MODEL_NAME") or "Qwen/Qwen2.5-72B-Instruct"
 TASK_NAME = os.getenv("TASK") or "easy"
-BENCHMARK = "cloud_env"
 ENV_URL = os.getenv("OPENENV_BASE_URL") or "https://belnoinja-cloud-incident-simulator.hf.space"
 
-MAX_STEPS = 15
-SUCCESS_SCORE_THRESHOLD = 0.1
-MAX_TOTAL_REWARD = 1.0
-
-def log_step(step: int, action: str, reward: float, done: bool, error: Optional[str]) -> None:
-    error_val = error if error else "null"
-    print(f"[STEP] step={step} action={action} reward={reward:.2f} done={str(done).lower()} error={error_val}", flush=True)
-
-def log_end(success: bool, steps: int, score: float, rewards: List[float]) -> None:
-    rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-    print(f"[END] success={str(success).lower()} steps={steps} score={score:.3f} rewards={rewards_str}", flush=True)
-
-async def main() -> None:
-    print("[BOOT] Starting inference script", flush=True)
+async def main():
+    print(f"[BOOT] Starting Inference. Model: {MODEL_NAME}, Task: {TASK_NAME}", flush=True)
     
-    # Initialize variables for the finally block
     rewards = []
     steps_taken = 0
     score = 0.0
     success = False
-    
+
     try:
+        if not API_KEY:
+            print("[ERROR] API_KEY/HF_TOKEN is missing.", flush=True)
+            return
+
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
         env = CloudEnvClient(base_url=ENV_URL)
 
-        print(f"[START] task={TASK_NAME} env={BENCHMARK} model={MODEL_NAME}", flush=True)
-
-        # 1. Robust Environment Reset (Handles Cold Starts)
+        # --- 1. WAIT FOR SIMULATOR ---
         result = None
-        for attempt in range(1, 11):
+        for i in range(1, 13): # 12 attempts * 10s = 120s max wait
             try:
-                print(f"[INIT] Attempting environment reset ({attempt}/10)...", flush=True)
+                print(f"[INIT] Resetting Env (Attempt {i}/12)...", flush=True)
                 result = await env.reset(task=TASK_NAME)
                 if result and result.observation:
+                    print("[INIT] Connection Successful.", flush=True)
                     break
             except Exception as e:
-                print(f"[DEBUG] Reset failed: {e}", flush=True)
-                await asyncio.sleep(5)
+                print(f"[DEBUG] Env pending: {e}", flush=True)
+                await asyncio.sleep(10)
 
-        if not result or not result.observation:
-            print("[FATAL] Environment unreachable after 10 attempts.", flush=True)
+        if not result:
+            print("[FATAL] Environment failed to respond.", flush=True)
             return
 
-        obs = result.observation
         messages = [
-            {"role": "system", "content": "You are a professional SRE. Investigate and resolve cloud issues using the execute_cloud_command tool."},
-            {"role": "user", "content": f"The environment is ready. Initial State: {obs.message}"}
+            {"role": "system", "content": "You are a professional SRE. Use execute_cloud_command to fix infrastructure issues."},
+            {"role": "user", "content": f"Initial state: {result.observation.message}"}
         ]
 
-        # 2. Agent Loop
-        for step in range(1, MAX_STEPS + 1):
+        # --- 2. AGENT LOOP ---
+        for step in range(1, 16):
             try:
                 response = client.chat.completions.create(
                     model=MODEL_NAME,
@@ -81,7 +72,7 @@ async def main() -> None:
                         "type": "function",
                         "function": {
                             "name": "execute_cloud_command",
-                            "description": "Executes a cloud command.",
+                            "description": "Execute SRE actions",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
@@ -91,38 +82,36 @@ async def main() -> None:
                                 "required": ["command", "args"]
                             }
                         }
-                    }],
-                    tool_choice="auto",
-                    temperature=0.1
+                    }]
                 )
 
                 msg = response.choices[0].message
-                messages.append(msg) # Must add assistant message to history
+                messages.append(msg)
 
                 if not msg.tool_calls:
-                    print(f"[DEBUG] Step {step}: Model provided final answer.", flush=True)
+                    print(f"[STEP {step}] No more tool calls. Ending.", flush=True)
                     break
 
-                # Process the first tool call
                 tool_call = msg.tool_calls[0]
-                args_json = json.loads(tool_call.function.arguments)
-                cmd = args_json.get("command")
-                args = args_json.get("args", {})
-
-                # Execute in environment
-                step_res = await env.step(CloudEnvAction(command=cmd, args=args))
+                args_dict = json.loads(tool_call.function.arguments)
                 
-                # Log metrics
+                # EXECUTE
+                step_res = await env.step(CloudEnvAction(
+                    command=args_dict["command"], 
+                    args=args_dict.get("args", {})
+                ))
+                
                 rew = float(step_res.reward or 0.0)
                 rewards.append(rew)
                 steps_taken = step
-                log_step(step, f"{cmd}({args})", rew, step_res.done, step_res.observation.error)
+                
+                print(f"[STEP {step}] Action: {args_dict['command']} | Reward: {rew}", flush=True)
 
-                # CRITICAL: Always provide tool output back to the model
+                # Append tool result (Required for API consistency)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
-                    "content": step_res.observation.error if step_res.observation.error else step_res.observation.output
+                    "content": step_res.observation.output or step_res.observation.error or "Done"
                 })
 
                 if step_res.done:
@@ -130,26 +119,21 @@ async def main() -> None:
                     break
 
             except Exception as e:
-                print(f"[ERROR] Step {step} failed: {e}", flush=True)
+                print(f"[STEP ERROR] Step {step} failed: {e}", flush=True)
                 break
 
-        # 3. Final Scoring
-        total_reward = sum(rewards)
-        score = min(max(total_reward / MAX_TOTAL_REWARD, 0.0), 1.0)
-        success = score >= SUCCESS_SCORE_THRESHOLD
+        score = min(max(sum(rewards), 0.0), 1.0)
+        success = score >= 0.1
 
-    except Exception as e:
-        print(f"[FATAL ERROR] Main loop crashed: {e}", flush=True)
+    except Exception:
+        print("[CRITICAL ERROR]")
         traceback.print_exc()
     
     finally:
-        # 4. Mandatory Final Logging & Shutdown
-        try:
-            await env.close()
-        except:
-            pass
-        log_end(success, steps_taken, score, rewards)
-        sys.exit(0) # Exit with 0 to ensure logs are processed
+        # Mandatory output format for the evaluator
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+        print(f"[END] success={str(success).lower()} steps={steps_taken} score={score:.3f} rewards={rewards_str}", flush=True)
+        sys.exit(0)
 
 if __name__ == "__main__":
     asyncio.run(main())
