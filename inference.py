@@ -5,6 +5,11 @@ import traceback
 import re
 import textwrap
 from typing import List, Optional
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 from openai import OpenAI
 from client import CloudEnvClient
 from models import CloudEnvAction
@@ -84,13 +89,15 @@ def parse_ai_action(text: str):
 
 def main():
     client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
-    env = CloudEnvClient(base_url=ENV_URL)
+    # Use .sync() to get a synchronous wrapper for the async client
+    env = CloudEnvClient(base_url=ENV_URL).sync()
     
     # We use a set to track rewards to avoid "farming" the same partial reward
     unique_rewards = set()
     rewards_history = []
     steps_taken = 0
     success = False
+    final_score = 0.0
 
     print(f"[START] task={TASK_NAME} env=cloud_incident model={MODEL_NAME}", flush=True)
 

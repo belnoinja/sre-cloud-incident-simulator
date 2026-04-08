@@ -1,7 +1,7 @@
 import os
 import sys
 import uvicorn
-from openenv.env_server import create_fastapi_app
+from openenv.core.env_server import create_fastapi_app
 
 
 # Pathing fix: Ensures that 'models.py' and 'server/' are discoverable 

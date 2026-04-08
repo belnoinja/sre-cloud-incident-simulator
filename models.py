@@ -1,6 +1,6 @@
 from typing import List, Dict, Optional, Any
 from pydantic import Field, ConfigDict
-from openenv import Action, Observation, State
+from openenv.core import Action, Observation, State
 
 class CloudEnvAction(Action):
     model_config = ConfigDict(protected_namespaces=())

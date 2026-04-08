@@ -1,4 +1,5 @@
-from openenv import EnvClient, StepResult
+from openenv.core import EnvClient
+from openenv.core.client_types import StepResult
 from models import CloudEnvAction, CloudEnvObservation, CloudEnvState
 
 class CloudEnvClient(EnvClient[CloudEnvAction, CloudEnvObservation, CloudEnvState]):
