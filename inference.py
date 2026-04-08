@@ -1,17 +1,22 @@
 import asyncio
 import json
 import os
+import sys
+import traceback
 from typing import List
 
 from openai import AsyncOpenAI
 from client import CloudEnvClient
 from models import CloudEnvAction
 
-API_BASE_URL = os.getenv("API_BASE_URL")
-MODEL_NAME = os.getenv("MODEL_NAME")
+# 🔥 BOOT LOG (prevents "unknown" status)
+print("[BOOT] script loaded", flush=True)
+
+API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-# 🔥 YOUR HF SPACE URL
+# 🔥 YOUR HF SPACE
 ENV_URL = "https://belnoinja-cloud-incident-simulator.hf.space"
 
 MAX_STEPS = 15
@@ -33,13 +38,13 @@ tools = [{
 }]
 
 
-# 🔥 HANDLE HF SPACE COLD START / LATENCY
+# 🔥 WAIT FOR HF SPACE (handles cold start)
 async def wait_for_env(env, retries=15):
     for i in range(retries):
         try:
             res = await env.reset(task="easy")
             if res and res.observation:
-                print("[DEBUG] Env ready", flush=True)
+                print("[DEBUG] env ready", flush=True)
                 return True
         except Exception:
             print(f"[DEBUG] waiting for env... {i+1}", flush=True)
@@ -75,7 +80,6 @@ async def run_episode(client, env, task_name):
                     tool_choice="auto",
                     temperature=0.1
                 )
-
                 msg = response.choices[0].message
 
             except Exception as e:
@@ -93,7 +97,6 @@ async def run_episode(client, env, task_name):
                     args = json.loads(tool_call.function.arguments)
                     command = args.get("command")
                     cmd_args = args.get("args", {})
-
                 except Exception as e:
                     print(f"[STEP] step={step} action=parse_error reward=0.00 done=false error={str(e)}", flush=True)
                     continue
@@ -138,7 +141,7 @@ async def run_episode(client, env, task_name):
                 break
 
     except Exception as e:
-        print(f"[STEP] step=0 action=fatal reward=0.00 done=true error={str(e)}", flush=True)
+        print(f"[STEP] step=0 action=episode_error reward=0.00 done=true error={str(e)}", flush=True)
 
     finally:
         rewards_str = ",".join(f"{r:.2f}" for r in rewards)
@@ -149,26 +152,47 @@ async def run_episode(client, env, task_name):
 
 
 async def main():
-    client = AsyncOpenAI(
-        base_url=API_BASE_URL,
-        api_key=HF_TOKEN
-    )
+    try:
+        # 🔥 ENV CHECK
+        if not API_BASE_URL or not MODEL_NAME or not HF_TOKEN:
+            print("[STEP] step=0 action=missing_env reward=0.00 done=true error=missing_env_vars", flush=True)
+            return
 
-    env = CloudEnvClient(base_url=ENV_URL)
+        client = AsyncOpenAI(
+            base_url=API_BASE_URL,
+            api_key=HF_TOKEN
+        )
 
-    # 🔥 CRITICAL: wait for HF space
-    ready = await wait_for_env(env)
-    if not ready:
-        print("[STEP] step=0 action=env_not_ready reward=0.00 done=true error=env_failed", flush=True)
-        return
+        env = CloudEnvClient(base_url=ENV_URL)
 
-    tasks = ["easy", "medium", "hard"]
+        # 🔥 WAIT FOR SPACE
+        ready = await wait_for_env(env)
+        if not ready:
+            print("[STEP] step=0 action=env_not_ready reward=0.00 done=true error=env_failed", flush=True)
+            return
 
-    for task in tasks:
-        await run_episode(client, env, task)
+        tasks = ["easy", "medium", "hard"]
 
-    await env.close()
+        for task in tasks:
+            await run_episode(client, env, task)
+
+        await env.close()
+
+    except Exception as e:
+        print(f"[STEP] step=0 action=main_error reward=0.00 done=true error={str(e)}", flush=True)
 
 
+# 🔥 FINAL SAFE ENTRY POINT (CRITICAL)
 if __name__ == "__main__":
-    asyncio.run(main())
+    print("[BOOT] inference started", flush=True)
+
+    try:
+        asyncio.run(main())
+    except Exception:
+        print("[STEP] step=0 action=fatal reward=0.00 done=true error=unhandled_exception", flush=True)
+        try:
+            traceback.print_exc()
+        except:
+            pass
+    finally:
+        sys.exit(0)
