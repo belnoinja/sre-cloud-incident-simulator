@@ -14,4 +14,4 @@ COPY . .
 ENV PORT=7860
 EXPOSE $PORT
 
-CMD ["sh", "-c", "uvicorn server.app:app --host 0.0.0.0 --port ${PORT}"]
+CMD sh -c "python -m server.app & sleep 5 && python inference.py"

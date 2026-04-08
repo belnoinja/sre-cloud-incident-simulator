@@ -1,26 +1,16 @@
 import asyncio
 import json
 import os
-import sys
-import traceback
 from typing import List
 
-# ---------------- SAFE IMPORT ----------------
-try:
-    from openai import AsyncOpenAI
-    from client import CloudEnvClient
-    from models import CloudEnvAction
-except Exception:
-    print("[FATAL] Import failed", flush=True)
-    traceback.print_exc()
-    import os
-    os._exit(0)
+from openai import AsyncOpenAI
+from client import CloudEnvClient
+from models import CloudEnvAction
 
-
-# ---------------- CONFIG ----------------
-API_BASE_URL = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4o")
+API_BASE_URL = os.getenv("API_BASE_URL")
+MODEL_NAME = os.getenv("MODEL_NAME")
 HF_TOKEN = os.getenv("HF_TOKEN")
+
 MAX_STEPS = 15
 
 
@@ -40,35 +30,39 @@ tools = [{
 }]
 
 
-# ---------------- EPISODE ----------------
+# 🔥 WAIT FOR ENV READY
+async def wait_for_env(env, retries=10):
+    for i in range(retries):
+        try:
+            await env.reset(task="easy")
+            print("[DEBUG] Env ready", flush=True)
+            return True
+        except:
+            print(f"[DEBUG] waiting for env... {i+1}", flush=True)
+            await asyncio.sleep(1)
+    return False
+
+
 async def run_episode(client, env, task_name):
     print(f"[START] task={task_name}", flush=True)
 
+    rewards: List[float] = []
+    steps_taken = 0
+    score = 0.0
+    success = False
+
     try:
-        # -------- RESET SAFE --------
-        res = None
-        for attempt in range(3):
-            try:
-                res = await env.reset(task=task_name)
-                if res and res.observation:
-                    break
-            except Exception as e:
-                print(f"[WARN] reset attempt {attempt+1} failed: {e}", flush=True)
-                await asyncio.sleep(1)
-
-        if not res or not res.observation:
-            print("[ERROR] reset failed completely", flush=True)
-            return
-
+        res = await env.reset(task=task_name)
         obs = res.observation
 
         messages = [
-            {"role": "system", "content": "You are an SRE. Use tools."},
+            {"role": "system", "content": "You are an SRE agent. Use tools."},
             {"role": "user", "content": obs.message}
         ]
 
-        # -------- LOOP --------
         for step in range(1, MAX_STEPS + 1):
+            steps_taken = step
+
             try:
                 response = await client.chat.completions.create(
                     model=MODEL_NAME,
@@ -77,43 +71,30 @@ async def run_episode(client, env, task_name):
                     tool_choice="auto",
                     temperature=0.1
                 )
+                msg = response.choices[0].message
+
             except Exception as e:
-                print(f"[ERROR] LLM call failed: {e}", flush=True)
-                traceback.print_exc()
+                print(f"[STEP] step={step} action=error reward=0.00 done=true error={str(e)}", flush=True)
                 break
 
-            if not response or not response.choices:
-                print("[ERROR] Empty LLM response", flush=True)
-                break
-
-            msg = response.choices[0].message
-
-            if not msg or not msg.tool_calls:
-                print("[INFO] No tool calls returned", flush=True)
+            if not msg.tool_calls:
+                print(f"[STEP] step={step} action=stop reward=0.00 done=true error=no_tool_call", flush=True)
                 break
 
             messages.append(msg)
 
             for tool_call in msg.tool_calls:
-                # -------- PARSE --------
                 try:
-                    args = json.loads(tool_call.function.arguments or "{}")
+                    args = json.loads(tool_call.function.arguments)
                     command = args.get("command")
                     cmd_args = args.get("args", {})
 
-                    if not command:
-                        raise ValueError("Missing command")
-
                 except Exception as e:
-                    print(f"[ERROR] Parse failed: {e}", flush=True)
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": str(e)
-                    })
+                    print(f"[STEP] step={step} action=parse_error reward=0.00 done=false error={str(e)}", flush=True)
                     continue
 
-                # -------- ENV STEP --------
+                action_str = f"{command}({cmd_args})"
+
                 try:
                     step_res = await env.step(
                         CloudEnvAction(command=command, args=cmd_args)
@@ -123,111 +104,67 @@ async def run_episode(client, env, task_name):
                     reward = float(step_res.reward or 0.0)
                     done = step_res.done
 
-                    print(f"[STEP] step={step} action={command} reward={reward}", flush=True)
+                    rewards.append(reward)
+
+                    print(
+                        f"[STEP] step={step} action={action_str} reward={reward:.2f} done={str(done).lower()} error={obs.error or 'null'}",
+                        flush=True
+                    )
 
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": obs.output or obs.error or "OK"
+                        "content": obs.output or obs.error or ""
                     })
 
                     if done:
-                        print("[SUCCESS] Task completed", flush=True)
-                        return
+                        score = max(0.0, min(1.0, reward))
+                        success = score > 0
+                        break
 
                 except Exception as e:
-                    print(f"[ERROR] env.step failed: {e}", flush=True)
-                    traceback.print_exc()
-                    continue
+                    print(
+                        f"[STEP] step={step} action={action_str} reward=0.00 done=true error={str(e)}",
+                        flush=True
+                    )
+                    break
+
+            if success:
+                break
 
     except Exception as e:
-        print(f"[ERROR] Episode crash: {e}", flush=True)
-        traceback.print_exc()
+        print(f"[STEP] step=0 action=fatal reward=0.00 done=true error={str(e)}", flush=True)
 
     finally:
-        print("[END EPISODE]", flush=True)
-
-
-# ---------------- MAIN ----------------
-async def main():
-    print("[DEBUG] Script started", flush=True)
-
-    env = None
-
-    try:
-        print(f"[DEBUG] OPENENV_BASE_URL={os.getenv('OPENENV_BASE_URL')}", flush=True)
-
-        client = AsyncOpenAI(
-            base_url=API_BASE_URL,
-            api_key=HF_TOKEN or "mock-key"
+        rewards_str = ",".join(f"{r:.2f}" for r in rewards)
+        print(
+            f"[END] success={str(success).lower()} steps={steps_taken} score={score:.3f} rewards={rewards_str}",
+            flush=True
         )
 
-        env_base = os.getenv("OPENENV_BASE_URL") or f"http://localhost:{os.getenv('PORT','7860')}"
-        print(f"[DEBUG] Using env: {env_base}", flush=True)
 
-        env = CloudEnvClient(base_url=env_base)
+async def main():
+    client = AsyncOpenAI(
+        base_url=API_BASE_URL,
+        api_key=HF_TOKEN
+    )
 
-        tasks = [os.getenv("TASK")] if os.getenv("TASK") else ["easy"]
+    env_base = os.getenv("OPENENV_BASE_URL") or "http://localhost:7860"
+    env = CloudEnvClient(base_url=env_base)
 
-        for t in tasks:
-            await run_episode(client, env, t)
+    # 🔥 WAIT FOR SERVER
+    ready = await wait_for_env(env)
+    if not ready:
+        print("[STEP] step=0 action=env_not_ready reward=0.00 done=true error=env_failed", flush=True)
+        return
 
-    except Exception as e:
-        print(f"[ERROR] Main failed: {e}", flush=True)
-        traceback.print_exc()
+    tasks = ["easy", "medium", "hard"]
 
-    finally:
-        if env:
-            try:
-                await env.close()
-            except Exception:
-                pass
+    for task in tasks:
+        await run_episode(client, env, task)
+
+    await env.close()
 
 
-# ---------------- ENTRY (FINAL FIX) ----------------
 if __name__ == "__main__":
-    import os
-    import sys
-    import traceback
-    import asyncio
-
-    try:
-        print("[BOOT] Starting inference...", flush=True)
-
-        async def safe_main():
-            try:
-                await main()
-            except Exception as e:
-                print("[SAFE_MAIN_ERROR]", flush=True)
-                try:
-                    traceback.print_exc()
-                except:
-                    print(str(e), flush=True)
-
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        try:
-            loop.run_until_complete(safe_main())
-        finally:
-            try:
-                loop.close()
-            except:
-                pass
-
-    except Exception as e:
-        print("[TOP_LEVEL_FATAL]", flush=True)
-        try:
-            traceback.print_exc()
-        except:
-            print(str(e), flush=True)
-
-    finally:
-        # 🚨 FORCE SUCCESS EXIT
-        try:
-            sys.stdout.flush()
-            sys.stderr.flush()
-        except:
-            pass
-
-        os._exit(0)
+    asyncio.run(main())
