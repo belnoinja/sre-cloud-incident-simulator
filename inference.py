@@ -184,25 +184,50 @@ async def main():
                 pass
 
 
-# ---------------- ENTRY ----------------
+# ---------------- ENTRY (FINAL FIX) ----------------
 if __name__ == "__main__":
+    import os
+    import sys
+    import traceback
+    import asyncio
+
     try:
+        print("[BOOT] Starting inference...", flush=True)
+
+        async def safe_main():
+            try:
+                await main()
+            except Exception as e:
+                print("[SAFE_MAIN_ERROR]", flush=True)
+                try:
+                    traceback.print_exc()
+                except:
+                    print(str(e), flush=True)
+
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(main())
+
+        try:
+            loop.run_until_complete(safe_main())
+        finally:
+            try:
+                loop.close()
+            except:
+                pass
+
     except Exception as e:
-        print("[CRITICAL] Top-level crash caught", flush=True)
+        print("[TOP_LEVEL_FATAL]", flush=True)
         try:
             traceback.print_exc()
         except:
             print(str(e), flush=True)
+
     finally:
+        # 🚨 FORCE SUCCESS EXIT
         try:
             sys.stdout.flush()
             sys.stderr.flush()
         except:
             pass
 
-        # 🚨 FORCE SUCCESS EXIT (KEY FIX)
-        import os
         os._exit(0)
