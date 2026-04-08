@@ -1,6 +1,16 @@
+# Core Environment & Simulation
 openenv-core==0.2.0
 pydantic>=2.0.0
+pydantic-settings>=2.0.0
+
+# API & Networking
+openai>=1.0.0
+httpx>=0.27.0
+python-dotenv>=1.0.0
+
+# Server (Only needed if you are hosting an endpoint, but kept per your list)
 fastapi>=0.111.0
 uvicorn==0.29.0
-openai>=1.0.0
-python-dotenv
+
+# Utilities
+typing-extensions>=4.10.0

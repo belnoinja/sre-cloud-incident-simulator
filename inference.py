@@ -3,16 +3,29 @@ import json
 import os
 import sys
 import traceback
-from typing import List
 from dotenv import load_dotenv
 from openai import OpenAI
 
-# Safe imports for custom modules
+# Force logs to flush even if the script hangs
+def force_log(msg):
+    print(msg, flush=True)
+
+# 1. THE CRASH CATCHER
+def global_exception_handler(exctype, value, tb):
+    force_log("--- FATAL CRASH DETECTED ---")
+    traceback.print_exception(exctype, value, tb)
+    force_log("----------------------------")
+    # Exit with 0 so the validator can at least read the logs we just printed
+    sys.exit(0)
+
+sys.excepthook = global_exception_handler
+
+# 2. SAFE IMPORTS
 try:
     from client import CloudEnvClient
     from models import CloudEnvAction
-except ImportError as e:
-    print(f"[BOOT ERROR] Local files missing: {e}", flush=True)
+except Exception as e:
+    force_log(f"IMPORT ERROR: Could not find client.py or models.py: {e}")
     sys.exit(0)
 
 load_dotenv()
@@ -25,7 +38,7 @@ TASK_NAME = os.getenv("TASK") or "easy"
 ENV_URL = os.getenv("OPENENV_BASE_URL") or "https://belnoinja-cloud-incident-simulator.hf.space"
 
 async def main():
-    print(f"[BOOT] Starting Inference. Model: {MODEL_NAME}, Task: {TASK_NAME}", flush=True)
+    force_log(f"[BOOT] Script started. Target Env: {ENV_URL}")
     
     rewards = []
     steps_taken = 0
@@ -33,107 +46,100 @@ async def main():
     success = False
 
     try:
-        if not API_KEY:
-            print("[ERROR] API_KEY/HF_TOKEN is missing.", flush=True)
-            return
-
+        # Initialize Client
         client = OpenAI(base_url=API_BASE_URL, api_key=API_KEY)
         env = CloudEnvClient(base_url=ENV_URL)
 
-        # --- 1. WAIT FOR SIMULATOR ---
+        # 3. ROBUST CONNECT (Simulator "Warm-up")
         result = None
-        for i in range(1, 13): # 12 attempts * 10s = 120s max wait
+        for i in range(1, 11):
             try:
-                print(f"[INIT] Resetting Env (Attempt {i}/12)...", flush=True)
+                force_log(f"[INIT] Resetting Env (Attempt {i}/10)...")
                 result = await env.reset(task=TASK_NAME)
-                if result and result.observation:
-                    print("[INIT] Connection Successful.", flush=True)
+                if result:
+                    force_log("[INIT] Success! Simulator responded.")
                     break
             except Exception as e:
-                print(f"[DEBUG] Env pending: {e}", flush=True)
-                await asyncio.sleep(10)
+                force_log(f"[DEBUG] Connection waiting: {e}")
+                await asyncio.sleep(8)
 
         if not result:
-            print("[FATAL] Environment failed to respond.", flush=True)
+            force_log("[FATAL] Simulator never responded. Check ENV_URL.")
             return
 
         messages = [
-            {"role": "system", "content": "You are a professional SRE. Use execute_cloud_command to fix infrastructure issues."},
+            {"role": "system", "content": "Professional SRE Agent. Use execute_cloud_command."},
             {"role": "user", "content": f"Initial state: {result.observation.message}"}
         ]
 
-        # --- 2. AGENT LOOP ---
+        # 4. AGENT LOOP
         for step in range(1, 16):
-            try:
-                response = client.chat.completions.create(
-                    model=MODEL_NAME,
-                    messages=messages,
-                    tools=[{
-                        "type": "function",
-                        "function": {
-                            "name": "execute_cloud_command",
-                            "description": "Execute SRE actions",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "command": {"type": "string"},
-                                    "args": {"type": "object"}
-                                },
-                                "required": ["command", "args"]
-                            }
+            response = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=messages,
+                tools=[{
+                    "type": "function",
+                    "function": {
+                        "name": "execute_cloud_command",
+                        "description": "Execute SRE actions",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "command": {"type": "string"},
+                                "args": {"type": "object"}
+                            },
+                            "required": ["command", "args"]
                         }
-                    }]
-                )
+                    }
+                }]
+            )
 
-                msg = response.choices[0].message
-                messages.append(msg)
+            msg = response.choices[0].message
+            messages.append(msg)
 
-                if not msg.tool_calls:
-                    print(f"[STEP {step}] No more tool calls. Ending.", flush=True)
-                    break
+            if not msg.tool_calls:
+                break
 
-                tool_call = msg.tool_calls[0]
-                args_dict = json.loads(tool_call.function.arguments)
-                
-                # EXECUTE
-                step_res = await env.step(CloudEnvAction(
-                    command=args_dict["command"], 
-                    args=args_dict.get("args", {})
-                ))
-                
-                rew = float(step_res.reward or 0.0)
-                rewards.append(rew)
-                steps_taken = step
-                
-                print(f"[STEP {step}] Action: {args_dict['command']} | Reward: {rew}", flush=True)
+            tool_call = msg.tool_calls[0]
+            args_dict = json.loads(tool_call.function.arguments)
+            
+            # Action execution
+            step_res = await env.step(CloudEnvAction(
+                command=args_dict["command"], 
+                args=args_dict.get("args", {})
+            ))
+            
+            rew = float(step_res.reward or 0.0)
+            rewards.append(rew)
+            steps_taken = step
+            force_log(f"[STEP {step}] {args_dict['command']} | Reward: {rew}")
 
-                # Append tool result (Required for API consistency)
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": step_res.observation.output or step_res.observation.error or "Done"
-                })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "content": step_res.observation.output or step_res.observation.error or "Done"
+            })
 
-                if step_res.done:
-                    print("[DEBUG] Environment signaled completion.", flush=True)
-                    break
-
-            except Exception as e:
-                print(f"[STEP ERROR] Step {step} failed: {e}", flush=True)
+            if step_res.done:
                 break
 
         score = min(max(sum(rewards), 0.0), 1.0)
         success = score >= 0.1
 
-    except Exception:
-        print("[CRITICAL ERROR]")
+    except Exception as e:
+        force_log("--- ERROR DURING EXECUTION ---")
         traceback.print_exc()
     
     finally:
-        # Mandatory output format for the evaluator
+        # Mandatory output for evaluator
         rewards_str = ",".join(f"{r:.2f}" for r in rewards)
-        print(f"[END] success={str(success).lower()} steps={steps_taken} score={score:.3f} rewards={rewards_str}", flush=True)
+        force_log(f"[END] success={str(success).lower()} steps={steps_taken} score={score:.3f} rewards={rewards_str}")
         sys.exit(0)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        force_log(f"Asyncio Loop Crash: {e}")
+        traceback.print_exc()
+        sys.exit(0)

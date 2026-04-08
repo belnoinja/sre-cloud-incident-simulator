@@ -1,28 +1,23 @@
 FROM public.ecr.aws/docker/library/python:3.11-slim
 
-# Prevent Python from buffering logs (Critical for seeing tracebacks)
+# Force stdout and stderr to be unbuffered
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Install system dependencies (git is often needed for openenv)
+RUN apt-get update && apt-get install -y git build-essential && rm -rf /var/lib/apt/lists/*
 
-# Install python dependencies
 COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy project files (inference.py, client.py, models.py)
+# Copy everything
 COPY . .
 
-# Set standard port
+# Set Port
 ENV PORT=7860
 EXPOSE 7860
 
-# Run in unbuffered mode
+# Run with -u to double-ensure unbuffered logging
 CMD ["python", "-u", "inference.py"]
