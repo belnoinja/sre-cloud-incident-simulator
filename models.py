@@ -1,6 +1,6 @@
 from typing import List, Dict, Optional, Any
 from pydantic import Field, ConfigDict
-from openenv.core.env_server import Action, Observation, State
+from openenv import Action, Observation, State
 
 class CloudEnvAction(Action):
     model_config = ConfigDict(protected_namespaces=())
@@ -17,7 +17,7 @@ class CloudEnvObservation(Observation):
     """
     The observation returned by the cloud simulator after an action.
     """
-    # done and reward are inherited from Observation
+    # Note: done and reward are inherited from Observation
     output: str           # Simulated standard output/JSON result
     error: str = ""       # Execution error if any
     current_task: str     # The difficulty level of the active task
@@ -28,11 +28,11 @@ class CloudEnvState(State):
     """
     Internal state of the simulated cloud infrastructure.
     """
-    # episode_id and step_count are inherited from State
+    # Note: episode_id and step_count are inherited from State
     current_task: str = "easy"
     max_steps: int = 30
     
-    # Simple simulated resource schemas
+    # Simulated resource schemas
     volumes: List[Dict[str, Any]] = Field(default_factory=list)
     security_groups: List[Dict[str, Any]] = Field(default_factory=list)
     instances: List[Dict[str, Any]] = Field(default_factory=list)

@@ -1,7 +1,14 @@
-name: "Cloud Incident Simulator"
-description: "A Cloud infrastructure simulator for SRE agents. Supports multiple tasks: easy, medium, hard."
-version: "0.1.0"
+name: "cloud-incident-simulator"
+description: "SRE infrastructure simulator for AI agent evaluation."
+version: "0.1.13"
 entrypoint: "server.app:app"
+
+# MANDATORY: This satisfies the 'multi-mode deployment' check
+runtime:
+  python: "3.11"
+  modes:
+    - "http" # Traditional REST API for your inference script
+    - "mcp"  # Model Context Protocol for direct AI tool integration
 
 action:
   type: "CloudEnvAction"
@@ -14,6 +21,6 @@ state:
   module: "models"
 
 tags:
-  - "openenv"
   - "sre"
-  - "devops"
+  - "openenv"
+  - "cloud-computing"

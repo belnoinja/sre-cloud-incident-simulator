@@ -3,16 +3,22 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "cloud_env_simulator"
-version = "0.1.0"
-description = "Cloud Infrastructure Incident Simulator"
+name = "cloud-incident-simulator"
+version = "0.1.13"
+description = "Cloud Infrastructure Incident Simulator for AI Agents"
+readme = "README.md"
+# CRITICAL: Limits the resolution to versions that actually exist
+requires-python = ">=3.11, <3.13"
 authors = [{ name = "SRE AI" }]
 dependencies = [
-    "openenv-core>=0.2.0",
+    "openenv>=0.1.13",
     "pydantic>=2.0.0",
-    "fastapi",
-    "uvicorn",
-    "openai>=1.0.0"
+    "pydantic-settings>=2.0.0",
+    "fastapi>=0.111.0",
+    "uvicorn>=0.35.0",
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0"
 ]
 
 [project.scripts]
@@ -20,4 +26,12 @@ server = "server.app:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["server"]
-py-modules = ["client", "inference", "models"]
+include = [
+    "models.py",
+    "client.py",
+    "inference.py",
+    "openenv.yaml"
+]
+
+[tool.hatch.metadata]
+allow-direct-references = true
