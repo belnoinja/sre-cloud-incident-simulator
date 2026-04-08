@@ -2,16 +2,19 @@ FROM public.ecr.aws/docker/library/python:3.11-slim
 
 WORKDIR /app
 
-# Upgrade pip and install requirements
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy logic
+# Copy project
 COPY . .
 
-# Hugging Face provides PORT environment variable (default 7860)
+# Set port (HF uses 7860)
 ENV PORT=7860
-EXPOSE $PORT
 
+# ⚠️ MUST be static
+EXPOSE 7860
+
+# Start server first, then inference
 CMD sh -c "python -m server.app & sleep 5 && python inference.py"
