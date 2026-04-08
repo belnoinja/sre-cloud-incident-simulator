@@ -17,4 +17,4 @@ ENV PORT=7860
 EXPOSE 7860
 
 # Start server first, then inference
-CMD sh -c "python -m server.app & sleep 5 && python inference.py"
+CMD ["python", "inference.py"]

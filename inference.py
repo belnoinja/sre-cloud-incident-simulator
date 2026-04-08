@@ -11,6 +11,9 @@ API_BASE_URL = os.getenv("API_BASE_URL")
 MODEL_NAME = os.getenv("MODEL_NAME")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
+# 🔥 YOUR HF SPACE URL
+ENV_URL = "https://belnoinja-cloud-incident-simulator.hf.space"
+
 MAX_STEPS = 15
 
 
@@ -30,16 +33,17 @@ tools = [{
 }]
 
 
-# 🔥 WAIT FOR ENV READY
-async def wait_for_env(env, retries=10):
+# 🔥 HANDLE HF SPACE COLD START / LATENCY
+async def wait_for_env(env, retries=15):
     for i in range(retries):
         try:
-            await env.reset(task="easy")
-            print("[DEBUG] Env ready", flush=True)
-            return True
-        except:
+            res = await env.reset(task="easy")
+            if res and res.observation:
+                print("[DEBUG] Env ready", flush=True)
+                return True
+        except Exception:
             print(f"[DEBUG] waiting for env... {i+1}", flush=True)
-            await asyncio.sleep(1)
+            await asyncio.sleep(2)
     return False
 
 
@@ -71,10 +75,11 @@ async def run_episode(client, env, task_name):
                     tool_choice="auto",
                     temperature=0.1
                 )
+
                 msg = response.choices[0].message
 
             except Exception as e:
-                print(f"[STEP] step={step} action=error reward=0.00 done=true error={str(e)}", flush=True)
+                print(f"[STEP] step={step} action=llm_error reward=0.00 done=true error={str(e)}", flush=True)
                 break
 
             if not msg.tool_calls:
@@ -149,10 +154,9 @@ async def main():
         api_key=HF_TOKEN
     )
 
-    env_base = os.getenv("OPENENV_BASE_URL") or "http://localhost:7860"
-    env = CloudEnvClient(base_url=env_base)
+    env = CloudEnvClient(base_url=ENV_URL)
 
-    # 🔥 WAIT FOR SERVER
+    # 🔥 CRITICAL: wait for HF space
     ready = await wait_for_env(env)
     if not ready:
         print("[STEP] step=0 action=env_not_ready reward=0.00 done=true error=env_failed", flush=True)
